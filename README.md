@@ -1,7 +1,3 @@
-# Corporate-Expense-Audit-Analysis with R
-Cleaned and explored corporate expense data, investigated spending patterns and examined factors associated with audit flags.
-# Corporate Expense Audit Analysis
-
 ## Project Overview
 Exploratory data analysis of corporate expense data to identify spending patterns, investigate audit indicators and uncover potential areas of concern.
 
