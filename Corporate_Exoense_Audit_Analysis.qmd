@@ -1,0 +1,603 @@
+---
+title: "Applied Business Analytics Project 2"
+subtitle: "Corporate Expense Audit Data Analysis"
+author: "Christiana Iroka"
+date: 05/03/2026
+format: 
+  pdf:
+    fontsize: 12pt
+    linestretch: 2
+    geometry: "margin=2.5cm"
+    justify: true
+editor: visual
+---
+
+# Problem Statement
+
+This project aims to perform exploratory data analysis on corporate expense audit data to identify patterns and uncover insights within the internal company expense submissions. The audit data consist of 1,000 expense submissions across multiple office locations, vendors, approvers and employees of varying tenure duration. A proportion of these submissions have been flagged during audit screening; therefore, it is important to understand the underlying factors driving audit issues.
+
+The task involves data preprocessing, including data cleaning and feature engineering, followed by exploratory analysis through visualisations to generate meaningful insights that can strengthen internal controls and support audit and compliance decision-making.
+
+# Solution Statement
+
+To address the problem, a structured Exploratory Data Analysis (EDA) methodology was adopted as follows:
+
+-   Perform data cleaning process to handle inconsistencies in the dataset, particularly within the textual fields.
+
+-   Apply feature engineering techniques to create meaningful variables to improve analysis.
+
+-   Apply data transformation techniques, such as discretisation of numerical variables.
+
+-   Perform exploratory data analysis (EDA) through visualisations to identify patterns in flagged expense submissions.
+
+-   Interpret findings through insights to highlight potential risks areas, and support audit processes.
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(skimr)
+library(janitor)
+library(recipes)
+library(ggplot2)
+library(ggrepel)
+library(scales)
+library(knitr)
+library(patchwork)
+library(ggthemes)
+```
+
+```{r load data, include=FALSE}
+data_file <- "audit_data.csv" # <-- CHANGE THIS ONLY
+audit_data <- read_csv(file.path("00_data", data_file))
+```
+
+```{r view data, include=FALSE}
+glimpse(audit_data)
+View(audit_data)
+```
+
+```{r data inspection, include=FALSE}
+summary(audit_data)
+head(audit_data)
+```
+
+# Exploratory Analysis
+
+## Data Cleaning
+
+Data cleaning was carried out to improve quality and consistency of the dataset. The data cleaning process started with the standardisation of column names to improve readability and ease of use. The dataset was then examined to understand the structure using skimr package summary. This produced a summary statistics as shown below.
+
+```{r use clean column names, include=FALSE}
+audit_data <- audit_data %>%
+    clean_names()
+names(audit_data)
+```
+
+```{r skim summary statistics}
+#| echo: false
+#| message: false
+#| warning: false
+skim_without_charts(audit_data)
+```
+
+The summary statistics above confirm that the corporate expense audit dataset is complete, with no missing values. The sole continuous variable, tenure_months, displays approximately symmetric distribution, with the mean (27.69) and median (p50 =27) being nearly identical, indicating no significant skewness.
+
+After summary statistics, the data was further examined with necessary checks as follows:
+
+-   **Missing data check:** an explicit missing value check was done, and zero missing value was reconfirmed.
+
+```{r missing values, include=FALSE}
+colSums(is.na(audit_data))
+```
+
+-   **Duplicate data check:** no duplicate records were identified.
+
+```{r check for duplicates, include=FALSE}
+sum(duplicated(audit_data))
+```
+
+-   **Outlier checks:** outlier detection was conducted for the tenure_months variable using the interquartile range (IQR) and boxplot methods. Both methods detected one extreme value at 78 months exceeding the upper limit of 77.5 months. This value was retained in the dataset as it shows a plausible tenure of approximately six and half years rather than indicative of a data entry error.
+
+```{r check outlier (IQR), include=FALSE}
+Q1 <- quantile(audit_data$tenure_months, 0.25)
+Q3 <- quantile(audit_data$tenure_months, 0.75)
+IQR <- Q3 - Q1
+upper_limit  <- Q3 + (1.5 * IQR)
+lower_limit  <- Q1 - (1.5 * IQR)
+cat("Lower limit", lower_limit, "\nUpper limit", upper_limit)
+
+#count outliers
+audit_data %>%
+filter(tenure_months > upper_limit | tenure_months < lower_limit) %>%
+  nrow()
+
+```
+
+```{r check outlier boxplot}
+#| echo: false
+boxplot(audit_data$tenure_months,
+        main = "Tenure Month Distribution",
+        ylab ="Tenure Months",
+        col = "lightblue")
+mtext("Outlier Detection",
+      side = 1,line = 4, cex = 0.8, col = "black" )
+```
+
+After the data examination was done, the following data cleaning techniques were applied to complete the data cleaning process.
+
+-   **Data type correction:** the audit_flag variable was converted from a logical data type to a categorical factor, with values relabelled as “Flagged” and “Not Flagged" to improve interpretability and support meaningful analysis.
+
+```{r fix audit_flag data type, include=FALSE}
+audit_data <- audit_data %>%
+    mutate(
+        audit_flag = factor(
+            audit_flag,
+            levels = c(TRUE, FALSE),
+            labels = c("Flagged", "Not Flagged")
+            )
+    )
+levels(audit_data$audit_flag)
+```
+
+```{r check audit_flag split, include=FALSE}
+audit_data %>%
+    count(audit_flag) %>%
+    mutate(pct = n/sum(n)) %>%
+    print()
+```
+
+-   **Textual data cleaning:** there were inconsistencies in the submitter_office variable which include special characters, irregular spacing and mixed letter casing. To rectify these inconsistencies, text standardisation techniques were applied, including non-alphanumerical character removal, extra spacing trimming and uppercase format conversion.
+
+```{r clean submitter_office, include=FALSE}
+audit_data <- audit_data %>%
+mutate(
+    submitter_office = submitter_office %>%
+        str_replace_all("[^A-Za-z0-9 ]", " ") %>%
+        str_squish() %>%
+        str_to_upper()
+)
+
+```
+
+## Feature Engineering
+
+Feature engineering was implemented to improve analysis through visualisations. Three analytic features were engineered from raw variables to enable more meaningful exploratory visualisations as follows:
+
+1.  **Office location:** standard cleaning techniques were not sufficient to restore complete consistency in the submitter_office variable due to the embedded level of data inconsistency. To improve this, office location was created by extracting standardised office locations from the cleaned text in the submitter_office variable. A predefined set of office patterns was used to identify key office location names, the office locations were directly matched against the raw address strings, with all white spaces removed prior to the matching. This produced a clean, validated categorical variable, office_location, with 11 distinct location names and no unmatched data.
+
+```{r create office_location}
+#| echo: false
+#| message: false
+office_patterns <- c(
+  "STONEPARK", "SABLE", "GLENCOURT", "NORTHGATE",
+  "FAIRVIEW", "CAMPUS", "CEDAR", "RIVERPOINT",
+  "ASHFIELD", "WESTBROOK", "HARBOR"
+)
+
+audit_data <- audit_data %>%
+  mutate(
+    office_location = str_extract(
+      gsub(" ", "", toupper(submitter_office)),
+      paste(office_patterns, collapse = "|")
+    )
+  )
+
+# veryfy the created office_group
+audit_data %>%
+  count(office_location, sort = TRUE) %>%
+  knitr::kable(caption = "Office Locations")
+```
+
+```{r re-check office_group, include=FALSE}
+audit_data  %>%
+    filter(!is.na(office_location)) %>% nrow() # Where not NA
+audit_data  %>%
+    filter(is.na(office_location)) %>% nrow() # Where NA
+```
+
+```{r re-check unmatched data in office_group, include=FALSE}
+audit_data %>%
+  filter(is.na(office_location)) %>%
+  pull(submitter_office) %>%
+  head(20)
+```
+
+```{r final check for messy data in submitter_office, include=FALSE}
+print(
+  audit_data %>%
+    select(submitter_office, office_location) %>%
+    head(15)
+)
+```
+
+2.  **Vendor group:** to facilitate vendor-related patterns analysis, the vendor\_ token variable was transformed into a new categorical feature, vendor_group. The vendor group variable was derived by the alphabetic prefix extraction from each vendor token identifier, isolating the leading alphabetic component. This produced a clearly defined vendor group categories suitable for aggregated comparison.
+
+```{r create vendor group}
+#| echo: false
+#| message: false
+audit_data <- audit_data %>%
+  mutate(
+    vendor_group = str_extract(vendor_token, "^[A-Z]+")
+  )
+
+# verify the created vendor_group
+audit_data %>% 
+  count(vendor_group, sort = TRUE) %>%
+  knitr::kable(caption = "Vendor Group")
+```
+
+3.  **Tenure band:** a new categorical feature, tenure_band was created by discretising employee tenure months into four experience bands using the recipes package. The tenure band break point was determined empirically from the data distribution, and the resulting categories were renamed (Junior, Mid, Senior and Veteran) to enhance clarity and enable categorical comparison across employee experience levels.
+
+```{r tenure_band recipes, include=FALSE}
+#create recipe and discretise tenure_months into 4 bands
+audit_recipe <- recipe(
+  audit_flag ~ tenure_months + vendor_group + office_location, data = audit_data) %>%
+  step_discretize(tenure_months, num_breaks = 4)
+
+# prep and bake
+audit_prepped <- audit_recipe %>%
+  prep() %>%
+  bake(new_data = audit_data)
+
+#check the created tenure bands 
+audit_prepped %>% count(tenure_months) 
+```
+
+```{r check tenure band cut points, include=FALSE}
+audit_recipe %>%
+  prep() %>%
+  tidy(number = 1) %>%
+print()
+```
+
+```{r rename tenure band (bin)}
+#| echo: false
+audit_prepped <- audit_prepped %>%
+  mutate(
+    tenure_band = case_when(
+      tenure_months == "bin1" ~ "Junior (1-15 months)",
+      tenure_months == "bin2" ~ "Mid (16-27 months)",
+      tenure_months == "bin3" ~ "Senior (28-40 months)",
+      tenure_months == "bin4" ~ "Veteran (41+ months)"
+    ) %>% factor(levels = c("Junior (1-15 months)", "Mid (16-27 months)",
+                            "Senior (28-40 months)", "Veteran (41+ months)"))
+  )
+
+# veryfy renamed tenure band
+audit_prepped %>% 
+  count(tenure_band)  %>%
+  knitr::kable(caption = "Tenure Band")
+```
+
+## Exploratory Analysis through Visualisations
+
+Exploratory analysis through visualisations was carried out to understand audit flag patterns across the engineered features. The process started with the examination of the overall distribution of audit flags to establish the baseline of flag rate. Audit flags were then compared across office locations, vendor groups and employee tenure bands, with the inclusion of a reference line on each plot to contextualise subgroup rates against the established baseline. Furthermore, a histogram and boxplot of employee tenure were created to assess whether the tenure distribution differ meaningfully between flagged and non-flagged expense submissions. Finally a scatter plot of average tenure vs audit flag rate by vendor group and a heatmap of office location against vendor group was developed to investigate whether audit risk is aggravated at a specific variable intersection beyond what either factor would determine in isolation.
+
+**The visualisations include the following:**
+
+```{r audit flag distribution}
+#| echo: false
+#| fig-width: 6
+#| fig-height: 5
+#| fig-align: center
+#| out-width: "100%"
+audit_prepped %>%
+  count(audit_flag) %>%
+  mutate(percentage = n/sum(n)) %>%
+  ggplot(aes(x = audit_flag, y = n, fill = audit_flag)) +
+  geom_col(width = 0.5) +
+   geom_text(aes(label = paste0(n, "\n(", scales::percent(percentage, accuracy = 0.1), ")")),
+            vjust = -0.4, fontface = "bold", size = 4.5) +
+  scale_fill_manual(values = c("Flagged" = "#F44336", "Not Flagged" = "#2196F3")) +
+  scale_y_continuous(limits = c(0, 950)) +
+  labs(
+    title = "Distribution of Expense Audit Flags",
+    subtitle = "Only 17.8% of expenses were flagged — establishing a baseline",
+    x  = NULL,
+    y = "Number of Expenses",
+    caption = "Source: Corporate Expense Audit Data"
+  ) +
+  theme_minimal()
+```
+
+The distribution of expense audit bar chart displays 17.8 % flagged vs 82.2 % non-flagged, showing that audit issues are concentrated within a smaller subset of expense submissions. This indicates that specific factors or patterns may be driving audit issues.
+
+```{r transaction by office}
+#| echo: false
+#| fig-width: 6
+#| fig-height: 5
+#| fig-align: center
+#| out-width: "100%"
+audit_prepped %>%
+  count(office_location) %>%
+  mutate(office_location = fct_reorder(office_location, n)) %>%
+  ggplot(aes(x = n, y = office_location, fill = n)) +
+  geom_col() +
+  geom_text(aes(label = n), hjust = -0.2, size = 3.5) +
+  scale_fill_gradient(low = "#90CAF9", high = "#1565C0",
+                      name = "Volume") +
+  scale_x_continuous(limits = c(0, 130)) +
+labs(
+  title = "Expense Submission Volume by Office",
+  subtitle = "Total number of expenses submisions by Office Location",
+  x = "Number of Expenses",
+  y = "Office Location",
+  caption = "Source: Corporate Expense Audit Data"
+) +
+theme_minimal()
+```
+
+The expense submission volume by office bar chart shows that WESTBROOK and SABLE recorded the highest number of submissions, while CAMPUS and ASHFIELD recorded a lower number of submissions. This indicates non-even distribution of activity across the company, and may result to offices with higher submission volume accounting for a greater number of flagged cases.
+
+```{r audit flag rate by office group}
+#| echo: false
+#| fig-width: 6
+#| fig-height: 5
+#| fig-align: center
+#| out-width: "100%"
+audit_prepped %>%
+  group_by(office_location) %>%
+  summarise(
+    total = n(),
+    flagged = sum(audit_flag == "Flagged"),
+    flag_rate = flagged/total
+  ) %>%
+  mutate(office_location = fct_reorder(office_location, flag_rate))  %>%
+  ggplot(aes(x = flag_rate, y = office_location,
+             fill = flag_rate > 0.178)) +
+  geom_col() +
+  geom_vline(xintercept = 0.178, linetype = "dashed",
+             colour = "grey30", linewidth = 0.7) +
+  geom_text(aes(label = scales::percent(flag_rate, accuracy = 0.1)),
+            hjust = -0.15, size = 3.5) +
+  scale_x_continuous(labels = scales::percent, limits = c(0, 0.40)) +
+  scale_fill_manual(values = c("FALSE" = "#90CAF9", "TRUE" = "#F44336"),
+                    labels = c("Below average", "Above average"),
+                    name   = "Audit Rate") +
+  labs(
+    title = "Audit Flag Rate by Office Location",
+    subtitle = "Compared against overall baseline of 17.8%",
+    x = "Audit Flag Rate",
+    y = "Office Location",
+    caption = "Dashed line shows overall average (17.8%) \n\n  Source: Corporate Expense Audit Data"
+  ) +
+  theme_minimal()
+```
+
+In the audit flag rate by office location bar chart, RIVERPOINT office shows the highest audit flag rate at 29%, with 11 percentage points above the 17.8% baseline, followed by SABLE and CAMPUS, suggesting localised risk factors to those office locations that warrant further investigations.
+
+```{r audit rate by vendure group}
+#| echo: false
+#| fig-width: 6
+#| fig-height: 5
+#| fig-align: center
+#| out-width: "100%"
+audit_prepped %>%
+  group_by(vendor_group) %>%
+  summarise(
+    total = n(),
+    flagged = sum(audit_flag == "Flagged"),
+    flag_rate = flagged/total
+  ) %>%
+  
+  mutate(vendor_group = fct_reorder(vendor_group, flag_rate)) %>%
+  
+  # create chart
+  ggplot(aes(x = flag_rate, y = vendor_group,
+             fill = flag_rate > 0.178)) +
+  geom_col() +
+  geom_vline(xintercept = 0.178, linetype = "dashed",
+             colour = "grey30", linewidth = 0.7) +
+  geom_text(aes(label = scales::percent(flag_rate, accuracy = 0.1)),
+            hjust = -0.15, size = 3.5) +
+  scale_x_continuous(labels = scales::percent, limits = c(0, 0.45)) +
+  scale_fill_manual(values = c("FALSE" = "#90CAF9", "TRUE" = "#F44336"),
+                    labels = c("Below average", "Above average"),
+                    name   = "Audit Rate") +
+  labs(
+    title = "Audit Flag Rate by Vendor Group",
+    subtitle = "Compared against overall baseline of 17.8%",
+    x = "Audit Flag Rate",
+    y  = "Vendor Group",
+    caption  = "Dashed line shows overall average (17.8%) \n\n  Source: Corporate Expense Audit Data"
+  ) +
+  theme_minimal()
+```
+
+The audit flag rate by vendor group bar chart shows high concentration of flag rates, well above the 17.8% baseline for VX, TRI and QNT vendor groups, indicating a higher audit risk in these groups.
+
+```{r audit flag rate by tenure band}
+#| echo: false
+#| fig-width: 6
+#| fig-height: 5
+#| fig-align: center
+#| out-width: "100%"
+audit_prepped %>%
+group_by(tenure_band) %>%
+summarise(
+total = n(),
+flagged = sum(audit_flag == "Flagged"),
+flag_rate = flagged / total
+) %>%
+  
+  # create chart
+  ggplot(aes(x = tenure_band, y = flag_rate, fill = flag_rate > 0.178)) +
+  geom_col(width = 0.5) +
+  geom_hline(yintercept = 0.178, linetype = "dashed",
+             colour = "grey30", linewidth = 0.7) +
+  geom_text(aes(label = scales::percent(flag_rate, accuracy = 0.1)),
+            vjust = -0.4, size = 3.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.30)) +
+  scale_fill_manual(values = c("FALSE" = "#90CAF9", "TRUE" ="#F44336"),
+                       labels = c("Below average", "Above average"),
+                       name = "Audit Rate") +
+  labs(
+    title = "Audit Flagged Rate by Employee Tenure Band",
+    subtitle = "Compared against overall baseline of 17.8%",
+    x = "Tenure Band",
+    y = "Audit Flag Rate",
+    caption = "Dashed line shows overall average (17.8%) \n\n  Source: Corporate Expense Audit Data"
+) +
+theme_minimal()
+```
+
+The audit flag rate by employee tenure band bar chart shows that audit flag rates vary slightly across employee tenure bands, indicating that tenure length has a weak effect on audit risk. Junior employees show the highest flag rate (19.8%), above the 17.8% baseline, while Veteran employees show the lowest rate (15.1%), below the baseline. This suggests a slight association of less experience with flagged expense submissions.
+
+```{r tenure distribution}
+#| echo: false
+#| fig-width: 6
+#| fig-height: 5
+#| fig-align: center
+#| out-width: "100%"
+audit_data %>%
+  # create chart
+  ggplot(aes(x = tenure_months, fill = audit_flag)) +
+  geom_histogram(bins = 30, colour = "white", linewidth = 0.2) +
+  scale_fill_manual(values = c("Flagged" = "#F44336", "Not Flagged" = "#2196F3"),
+                               name = "Audit Status") +
+labs(
+title = "Distribution of Employee Tenure by Audit Status",
+subtitle = "Tenure length's influence on audit flag likelyhood",
+x = "Tenure Months",
+y = "Count",
+caption = "Source: Corporate Expense Audit Data"
+) +
+theme_minimal()
+```
+
+The histogram of distribution of employee tenure by audit status shows that flagged expenses are spread consistently across all tenure lengths, the number of submissions decreases as tenure increases. While there are slightly higher flagged rates among shorter tenure, there is no great concentration of flagged expenses at any particular tenure point, suggesting tenure alone is not a key driver of audit risk.
+
+```{r tennure distribution by audit status}
+#| echo: false
+#| fig-width: 6
+#| fig-height: 5
+#| fig-align: center
+#| out-width: "100%"
+audit_data %>%
+  ggplot(aes(x = audit_flag, y = tenure_months, fill = audit_flag)) +
+  geom_boxplot(width = 0.5, outlier.colour = "black",
+               outlier.shape = 16, outlier.size = 2) +
+  scale_fill_manual(values = c("Flagged" = "#F44336", "Not Flagged" = "#2196F3"),
+                                 name = "Audit Status") +
+  labs(
+    title  = "Tenure Distribution by Audit Status",
+    subtitle = "Comparing tenure duration between 
+                  flagged and not flagged expenses",
+    x = NULL,
+    y = "Tenure (Months)",
+    caption = "Source: Corporate Expense Audit Data"
+) +
+theme_minimal()
+
+```
+
+The tenure distribution by audit status box plot shows a similar tenure distribution for both flagged and non-flagged expense submissions. There is a substantial overlap between flagged and non-flagged, with a near identical median of approximately 27 months. This reinforces the view that tenure alone is not a strong determinant of audit risk.
+
+```{r distribution by audit status and tenure per vendor}
+#| echo: false
+#| fig-width: 6
+#| fig-height: 5
+#| fig-align: center
+#| out-width: "100%"
+audit_data %>%
+  group_by(vendor_group) %>%
+  summarise(
+    avg_tenure = mean(tenure_months),
+    flag_rate  = mean(audit_flag == "Flagged"),
+    total = n()
+) %>%
+  
+#create Chart
+  ggplot(aes(x = avg_tenure, y = flag_rate, size = total,
+             colour = flag_rate,
+             label = vendor_group)) +
+  geom_point(alpha = 0.7) +
+  ggrepel::geom_text_repel(size = 3.5,
+                           fontface = "bold", 
+                           colour = "black",
+                           force = 3,
+                           box.padding = 0.5) +
+  geom_hline(yintercept = 0.178, linetype = "dashed",
+             colour = "grey30", linewidth = 0.7) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.40)) +
+  scale_size_continuous(name = "Number of\nExpenses", range = c(4, 12)) +
+  scale_color_gradient(low = "#2196F3", high = "#F44336", 
+                       labels = scales::percent,
+                       name = "Flag Rate") +
+  labs(
+    title = "Average Tenure vs Audit Flag Rate by Vendor Group",
+    subtitle = "Dot size = number of expense per vendor | Colour = audit flag rate",
+    x = "Average Tenure (Months)",
+    y = "Audit Flag Rate",
+    caption = "Dashed line shows overall average (17.8%) \n\nSource: Corporate Expense Audit Data"
+) +
+theme_minimal()
+```
+
+The scatter plot of average tenure vs audit flag rate by vendor group shows that while VX vendor group has the lowest employee tenure average and the highest audit flag rate, TRI and QNT vendor groups with higher average tenure also have elevated audit flag rates, exceeding the 17.8% audit flag baseline. This suggests that vendor factors remain a significant driver of audit flag risk.
+
+```{r office vs vendor}
+#| echo: false
+#| fig-width: 6
+#| fig-height: 5
+#| fig-align: center
+#| out-width: "100%"
+audit_prepped %>%
+  group_by(office_location, vendor_group) %>%
+  summarise(
+     total = n(),
+    flag_rate  = mean(audit_flag == "Flagged"),
+    .groups = "drop"
+) %>%
+    
+filter(total >= 3) %>%
+  ggplot(aes(x = vendor_group, y = office_location, fill = flag_rate)) +  
+geom_tile(colour = "white", linewidth = 0.5) +
+geom_text(aes(label = scales::percent(flag_rate, accuracy = 1)),
+          colour = "white", fontface = "bold", size = 3) +
+scale_fill_gradient2(
+  low = "#2196F3",
+  mid = "#FF9800",
+  high = "#F44336",
+  midpoint = 0.178,
+  labels = scales::percent,
+  name = "Flag Rate"
+) +
+labs(
+  title = "Audit Risk Heatmap: Office vs Vendor",
+  subtitle = "Darker red = higher audit flag rate \nCells with fewer than 3 records suppressed",
+  x = "Vendor Group",
+  y = "Office Location",
+  caption = "Overall average = 17.8% \n\nSource: Corporate Expense Audit Data"
+) +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 30, hjust = 1))
+    
+```
+
+The audit risk heatmap shows the variation of audit risk across specific combination of office location and vendor group. RIVERPOINT office paired with VX vendor shows the highest audit flag rate at 70%, nearly four times the 17.8% baseline. This highlights the need for targeted intervention at specific office-vendor combination for a more effective audit policies.
+
+# Discussion and Conclusion
+
+The exploratory analysis of the corporate expense audit data provides meaningful insights into internal company expense submission patterns. The distribution of expense submission volumes across office locations shows that activity is not evenly distributed across the company, with WESTBROOK and SABLE office locations contributing the highest number of submissions; however, higher expense submission does not correspond to higher audit risk. For instance, while WESTBROOK records the highest submission volume, it does not have the highest audit flag rate. In contrast, CAMPUS office location which records the lowest submission volume incurred the third highest level of audit flag rates. This highlights the importance of evaluating audit risk based on proportion rather than absolute counts.   
+
+Further analysis reveals that audit risk is concentrated across specific office locations and vendor groups; only a small proportion of expense submissions were flagged (178 out of 1000 records), establishing an overall baseline of 17.8% audit flag rate.
+
+At the company level, 5 out of the 11 office locations recorded audit flag rates above the baseline, with RIVERPOINT, SABLE and CAMPUS office locations exhibiting significantly higher audit flag rates compared to the baseline, indicating the presence of location-specific risk factors.
+
+At the vendor level, VX, TRI and QNT show consistently higher audit flag rates, suggesting that vendor-related factors play a significant role in influencing audit outcomes.
+
+Conversely, employee tenure demonstrates a weaker relationship with audit risk. Although, employees with shorter tenure show slightly higher flag rates, the differences across tenure groups are relatively small. This is further supported by the average tenure vs audit flag rate analysis across vendor group which shows that vendors with high audit flag rate are associated with both lower and higher average tenure length. This reinforces vendor factors as a stronger drivers of audit risk than employee tenure length.
+
+Importantly, the interaction between office and vendor as shown in the audit risk heatmap, demonstrates that audit risk is influenced by specific factor combinations rather than single factors in isolation. Certain office-vendor pairings, such as RIVERPOINT-VX, SABLE-VX and CAMPUS-BND, exhibit notably higher audit flag rates. This highlights the importance of a more targeted audit risk assessment approach.
+
+**Conclusions from the analysis are as follows:**
+
+1.  Audit and compliance efforts should be be focused on high-risk office locations and vendor groups rather than applying uniform controls across all expense submissions.
+
+2.  Specific office locations, especially RIVERPOINT, SABLE and CAMPUS have higher audit flag rates and should be investigated for potential process, control or management gaps.
+
+3.  Vendor groups with audit flag rates above 17.8%, particularly VX, TRI and QNT should be subjected to enhanced monitoring and control measures, such as pre-approval checks and additional review.
+
+4.  Employee tenure is a weaker risk factor; however, Junior employees should be monitored, especially when a high-risk vendor group or office location is involved in their expense submissions.
+
+5.  High risk office-vendor combinations, such as RIVERPOINT-VX, SABLE-VX and CAMPUS-BND should be prioritised for enhanced monitoring and additional review.
